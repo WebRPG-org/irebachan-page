@@ -48,3 +48,34 @@ export function labelBlockAt(doc, pos) {
     }
     return { index: -1, blocks };
 }
+
+/**
+ * ラベルブロックを並べ替える。toIndex は移動前の並びに対する挿入位置（末尾は blocks.length）。
+ * 同じ場所なら null。導入文は動かさない。
+ */
+export function moveLabelBlock(doc, fromIndex, toIndex) {
+    const blocks = listLabelBlocks(doc);
+    if (fromIndex < 0 || fromIndex >= blocks.length) return null;
+    if (toIndex < 0 || toIndex > blocks.length) return null;
+    if (toIndex === fromIndex || toIndex === fromIndex + 1) return null;
+
+    const ended = doc.length > 0 && doc.sliceString(doc.length - 1, doc.length) === "\n";
+    const chunks = blocks.map((block) => {
+        const chunk = doc.sliceString(block.from, block.to);
+        return chunk.endsWith("\n") ? chunk.slice(0, -1) : chunk;
+    });
+    const moving = chunks.splice(fromIndex, 1)[0];
+    let insertAt = toIndex;
+    if (fromIndex < toIndex) insertAt -= 1;
+    chunks.splice(insertAt, 0, moving);
+
+    let cursor = blocks[0].from;
+    for (let i = 0; i < insertAt; i++) cursor += chunks[i].length + 1;
+    const insert = chunks.join("\n") + (ended ? "\n" : "");
+    return {
+        from: blocks[0].from,
+        to: doc.length,
+        insert,
+        cursor,
+    };
+}

@@ -2245,22 +2245,36 @@ body.node-graph-open .cm-scroller {
 }
 
 .script-editor-host .cm-foldGutter {
-    width: 1.6em;
+    width: 0;
+    min-width: 0;
+    overflow: visible;
+    background: transparent;
 }
 
 .script-editor-host .cm-foldGutter .cm-gutterElement {
+    position: relative;
+    overflow: visible;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 0;
-    cursor: pointer;
+    background: transparent;
+    pointer-events: none;
 }
 
 .script-editor-host .cm-foldMarker {
-    display: block;
-    width: 14px;
-    height: 14px;
-    color: var(--editor-gutter-fg, #888);
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 100%;
+    color: var(--editor-gutter-fg, #ccc);
+    pointer-events: auto;
+    touch-action: none;
 }
 
 .script-editor-host .cm-foldMarker::before {
@@ -2268,20 +2282,47 @@ body.node-graph-open .cm-scroller {
     display: block;
     width: 0;
     height: 0;
-    margin: 4px auto 0;
+    margin: 0;
     border-style: solid;
 }
 
 .script-editor-host .cm-foldMarker.is-open::before {
-    border-width: 6px 4.5px 0;
+    border-width: 8px 7px 0;
     border-color: currentColor transparent transparent;
 }
 
 .script-editor-host .cm-foldMarker.is-folded::before {
-    margin-top: 2px;
-    margin-left: 5px;
-    border-width: 4.5px 0 4.5px 6px;
+    border-width: 7px 0 7px 9px;
     border-color: transparent transparent transparent currentColor;
+}
+
+.script-editor-host .cm-line.cm-labelHead {
+    padding-left: 22px;
+}
+
+.label-drag-indicator {
+    position: fixed;
+    z-index: 45;
+    height: 2px;
+    margin-top: -1px;
+    background: #9cf;
+    pointer-events: none;
+}
+
+.label-drag-indicator.is-same {
+    opacity: 0.35;
+}
+
+.label-drag-indicator[hidden] {
+    display: none;
+}
+
+.script-editor-host.is-label-dragging {
+    user-select: none;
+}
+
+.script-editor-host .cm-foldMarker.is-holding {
+    filter: brightness(1.45);
 }
 
 .symbol-bar {
@@ -2875,12 +2916,23 @@ body.node-graph-open .cm-scroller {
         display: none !important;
     }
 
+    .script-editor-host .cm-gutters {
+        padding-left: 0;
+        background: transparent;
+        overflow: visible;
+        z-index: 5;
+        pointer-events: none;
+    }
+
     .script-editor-host .cm-foldGutter {
-        width: 28px;
+        width: 0;
+        min-width: 0;
+        overflow: visible;
+        pointer-events: none;
     }
 
     .script-editor-host .cm-content {
-        padding: 0.45em 0.35em 0.45em 0.45em;
+        padding: 0.45em 0.35em 0.45em 2px;
     }
 
     .script-editor-host .cm-editor {

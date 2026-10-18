@@ -11,6 +11,7 @@ import {
     rectangularSelection,
     crosshairCursor,
     highlightActiveLine,
+    Decoration,
 } from "@codemirror/view";
 import {
     foldGutter,
@@ -33,7 +34,7 @@ import { lintKeymap } from "@codemirror/lint";
 import { novelLanguage } from "./novel_syntax.mjs";
 import { buildColorThemeExtensions } from "./novel_theme.mjs";
 import { getStoredThemeId } from "./novel_editor_colors.mjs";
-import { labelBlockAt } from "./label_blocks.mjs";
+import { isLabelDefLine, labelBlockAt, listLabelBlocks, moveLabelBlock } from "./label_blocks.mjs";
 
 function clearDomTextSelection() {
     const sel = window.getSelection?.();
@@ -248,6 +249,35 @@ function labelBodyFoldRange(doc, block) {
     return { from: block.headerTo, to };
 }
 
+const labelHeadMark = Decoration.line({ class: "cm-labelHead" });
+
+/** 三角が被らないよう、ラベル行だけ文字を右へずらす */
+const labelHeadPlugin = ViewPlugin.fromClass(class {
+    constructor(view) {
+        this.decorations = this.build(view);
+    }
+    update(update) {
+        if (update.docChanged || update.viewportChanged) {
+            this.decorations = this.build(update.view);
+        }
+    }
+    build(view) {
+        const marks = [];
+        for (const { from, to } of view.visibleRanges) {
+            let pos = from;
+            while (pos <= to) {
+                const line = view.state.doc.lineAt(pos);
+                if (isLabelDefLine(line.text)) marks.push(labelHeadMark.range(line.from));
+                if (line.to >= view.state.doc.length) break;
+                pos = line.to + 1;
+            }
+        }
+        return Decoration.set(marks);
+    }
+}, {
+    decorations: (plugin) => plugin.decorations,
+});
+
 const labelFoldService = foldService.of((state, lineStart) => {
     const line = state.doc.lineAt(lineStart);
     const { index, blocks } = labelBlockAt(state.doc, line.from);
@@ -255,12 +285,166 @@ const labelFoldService = foldService.of((state, lineStart) => {
     return labelBodyFoldRange(state.doc, blocks[index]);
 });
 
-/** 開いているラベルは下向き、たたんだラベルは右向き */
+/** 開いているラベルは下向き、たたんだラベルは右向き。長押しでブロックを移動 */
 function foldMarkerDOM(open) {
     const span = document.createElement("span");
     span.className = open ? "cm-foldMarker is-open" : "cm-foldMarker is-folded";
-    span.title = open ? "たたむ" : "ひらく";
     return span;
+}
+
+const LABEL_DRAG_HOLD_MS = 280;
+
+function bindLabelBlockDrag(view) {
+    const indicator = document.createElement("div");
+    indicator.className = "label-drag-indicator";
+    indicator.hidden = true;
+    document.body.appendChild(indicator);
+
+    let drag = null;
+    let suppressClick = false;
+
+    const blockIndexAt = (clientY) => {
+        const rect = view.contentDOM.getBoundingClientRect();
+        const pos = view.posAtCoords({ x: rect.left + 16, y: clientY });
+        if (pos == null) return -1;
+        const found = labelBlockAt(view.state.doc, pos);
+        if (found.index >= 0) return found.index;
+        const blocks = found.blocks;
+        if (!blocks.length) return -1;
+        const first = view.coordsAtPos(blocks[0].from);
+        return first && clientY < first.top ? 0 : -1;
+    };
+
+    const dropIndexAt = (clientY) => {
+        const blocks = listLabelBlocks(view.state.doc);
+        if (!blocks.length) return 0;
+        for (let i = 0; i < blocks.length; i++) {
+            const top = view.coordsAtPos(blocks[i].from)?.top;
+            if (top == null) continue;
+            const nextTop = i + 1 < blocks.length
+                ? view.coordsAtPos(blocks[i + 1].from)?.top
+                : view.contentDOM.getBoundingClientRect().bottom;
+            const mid = nextTop == null ? top : (top + nextTop) / 2;
+            if (clientY < mid) return i;
+        }
+        return blocks.length;
+    };
+
+    const placeIndicator = (index) => {
+        const blocks = listLabelBlocks(view.state.doc);
+        if (!blocks.length || !drag) return;
+        const rect = view.contentDOM.getBoundingClientRect();
+        let y;
+        if (index <= 0) y = view.coordsAtPos(blocks[0].from)?.top;
+        else if (index >= blocks.length) {
+            const tail = Math.max(0, view.state.doc.length - 1);
+            y = view.coordsAtPos(tail)?.bottom;
+        } else y = view.coordsAtPos(blocks[index].from)?.top;
+        if (y == null) {
+            indicator.hidden = true;
+            return;
+        }
+        const same = index === drag.index || index === drag.index + 1;
+        indicator.hidden = false;
+        indicator.classList.toggle("is-same", same);
+        indicator.style.left = `${rect.left}px`;
+        indicator.style.width = `${rect.width}px`;
+        indicator.style.top = `${y}px`;
+    };
+
+    const clearDrag = () => {
+        if (!drag) return;
+        clearTimeout(drag.timer);
+        drag.marker?.classList.remove("is-holding");
+        view.dom.classList.remove("is-label-dragging");
+        indicator.hidden = true;
+        drag = null;
+    };
+
+    view.dom.addEventListener("pointerdown", (event) => {
+        const marker = event.target.closest?.(".cm-foldMarker");
+        if (!marker || !view.dom.contains(marker)) return;
+        if (event.button != null && event.button !== 0) return;
+        const index = blockIndexAt(event.clientY);
+        if (index < 0) return;
+        drag = {
+            pointerId: event.pointerId,
+            index,
+            drop: index,
+            startX: event.clientX,
+            startY: event.clientY,
+            armed: false,
+            moved: false,
+            marker,
+            timer: 0,
+        };
+        try {
+            marker.setPointerCapture?.(event.pointerId);
+        } catch {
+            /* 合成イベントや未対応ブラウザではキャプチャしない */
+        }
+        drag.timer = window.setTimeout(() => {
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            drag.armed = true;
+            drag.marker.classList.add("is-holding");
+            view.dom.classList.add("is-label-dragging");
+            drag.drop = dropIndexAt(event.clientY);
+            placeIndicator(drag.drop);
+        }, LABEL_DRAG_HOLD_MS);
+    });
+
+    view.dom.addEventListener("pointermove", (event) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (!drag.armed) {
+            if (dx * dx + dy * dy > 64) {
+                suppressClick = true;
+                clearDrag();
+            }
+            return;
+        }
+        event.preventDefault();
+        drag.drop = dropIndexAt(event.clientY);
+        placeIndicator(drag.drop);
+    });
+
+    const finish = (event) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const armed = drag.armed;
+        const fromIndex = drag.index;
+        const toIndex = drag.drop;
+        if (armed || drag.moved) {
+            suppressClick = true;
+            window.setTimeout(() => { suppressClick = false; }, 400);
+        }
+        clearDrag();
+        if (!armed) return;
+        const change = moveLabelBlock(view.state.doc, fromIndex, toIndex);
+        if (!change) return;
+        view.dispatch({
+            changes: { from: change.from, to: change.to, insert: change.insert },
+            selection: { anchor: change.cursor },
+            scrollIntoView: true,
+        });
+        view.focus();
+    };
+
+    view.dom.addEventListener("pointerup", finish);
+    view.dom.addEventListener("pointercancel", (event) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (drag.armed || drag.moved) {
+            suppressClick = true;
+            window.setTimeout(() => { suppressClick = false; }, 400);
+        }
+        clearDrag();
+    });
+    view.dom.addEventListener("click", (event) => {
+        if (!suppressClick) return;
+        suppressClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
 }
 
 /** basicSetup と同じ構成。折りたたみ印だけ三角にする */
@@ -322,6 +506,7 @@ export function createScenarioEditor(parent, options = {}) {
             editorSetup,
             novelLanguage,
             labelFoldService,
+            labelHeadPlugin,
             colorThemeCompartment.of(buildColorThemeExtensions(initialTheme)),
             EditorView.lineWrapping,
             previewKeymap,
@@ -339,6 +524,7 @@ export function createScenarioEditor(parent, options = {}) {
     });
 
     parent.classList.add("script-editor-host--ready");
+    bindLabelBlockDrag(view);
 
     view.dom.addEventListener("focusin", () => onFocusChange?.(true));
     view.dom.addEventListener("focusout", (event) => {
