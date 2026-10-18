@@ -1,9 +1,39 @@
-import { Compartment } from "@codemirror/state";
-import { EditorView, basicSetup } from "codemirror";
-import { keymap, ViewPlugin } from "@codemirror/view";
+import { Compartment, EditorState } from "@codemirror/state";
+import {
+    EditorView,
+    ViewPlugin,
+    keymap,
+    lineNumbers,
+    highlightActiveLineGutter,
+    highlightSpecialChars,
+    drawSelection,
+    dropCursor,
+    rectangularSelection,
+    crosshairCursor,
+    highlightActiveLine,
+} from "@codemirror/view";
+import {
+    foldGutter,
+    foldService,
+    indentOnInput,
+    syntaxHighlighting,
+    defaultHighlightStyle,
+    bracketMatching,
+    foldKeymap,
+} from "@codemirror/language";
+import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import {
+    closeBrackets,
+    autocompletion,
+    closeBracketsKeymap,
+    completionKeymap,
+} from "@codemirror/autocomplete";
+import { lintKeymap } from "@codemirror/lint";
 import { novelLanguage } from "./novel_syntax.mjs";
 import { buildColorThemeExtensions } from "./novel_theme.mjs";
 import { getStoredThemeId } from "./novel_editor_colors.mjs";
+import { labelBlockAt } from "./label_blocks.mjs";
 
 function clearDomTextSelection() {
     const sel = window.getSelection?.();
@@ -15,6 +45,14 @@ function isCoarsePointer() {
         typeof window !== "undefined" &&
         window.matchMedia("(pointer: coarse)").matches
     );
+}
+
+function symbolBarCover(scrollerRect) {
+    const bar = document.getElementById("symbolBar");
+    if (!bar || bar.hidden || !scrollerRect) return 0;
+    const barRect = bar.getBoundingClientRect();
+    const overlap = Math.min(barRect.bottom, scrollerRect.bottom) - Math.max(barRect.top, scrollerRect.top);
+    return overlap > 0 ? overlap : 0;
 }
 
 /** カーソルとキーボード上端・画面上端の間に空ける余白(px) */
@@ -32,7 +70,7 @@ function getHiddenScrollerInsets(view) {
     const visibleBottom = vv.offsetTop + vv.height;
     return {
         top: Math.max(0, visibleTop - rect.top),
-        bottom: Math.max(0, rect.bottom - visibleBottom),
+        bottom: Math.max(0, rect.bottom - visibleBottom) + symbolBarCover(rect),
     };
 }
 
@@ -201,8 +239,62 @@ function buildMobileTouchScrollExtensions() {
 
 const colorThemeCompartment = new Compartment();
 
+/** ラベル行の末尾から、次のラベルとの区切り改行の手前までを折りたためるようにする */
+function labelBodyFoldRange(doc, block) {
+    if (!block) return null;
+    let to = block.to;
+    if (to < doc.length) to -= 1;
+    if (block.headerTo >= to) return null;
+    return { from: block.headerTo, to };
+}
+
+const labelFoldService = foldService.of((state, lineStart) => {
+    const line = state.doc.lineAt(lineStart);
+    const { index, blocks } = labelBlockAt(state.doc, line.from);
+    if (index < 0 || blocks[index].from !== line.from) return null;
+    return labelBodyFoldRange(state.doc, blocks[index]);
+});
+
+/** 開いているラベルは下向き、たたんだラベルは右向き */
+function foldMarkerDOM(open) {
+    const span = document.createElement("span");
+    span.className = open ? "cm-foldMarker is-open" : "cm-foldMarker is-folded";
+    span.title = open ? "たたむ" : "ひらく";
+    return span;
+}
+
+/** basicSetup と同じ構成。折りたたみ印だけ三角にする */
+const editorSetup = [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter({ markerDOM: foldMarkerDOM }),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    keymap.of([
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...searchKeymap,
+        ...historyKeymap,
+        ...foldKeymap,
+        ...completionKeymap,
+        ...lintKeymap,
+    ]),
+];
+
 export function createScenarioEditor(parent, options = {}) {
-    const { onChange, onPreviewShortcut, onSyncEditorShortcut, onCursorChange } = options;
+    const { onChange, onPreviewShortcut, onSyncEditorShortcut, onCursorChange, onFocusChange } = options;
     const initialTheme = getStoredThemeId();
     let backgroundPaused = false;
 
@@ -227,8 +319,9 @@ export function createScenarioEditor(parent, options = {}) {
         parent,
         doc: "",
         extensions: [
-            basicSetup,
+            editorSetup,
             novelLanguage,
+            labelFoldService,
             colorThemeCompartment.of(buildColorThemeExtensions(initialTheme)),
             EditorView.lineWrapping,
             previewKeymap,
@@ -246,6 +339,12 @@ export function createScenarioEditor(parent, options = {}) {
     });
 
     parent.classList.add("script-editor-host--ready");
+
+    view.dom.addEventListener("focusin", () => onFocusChange?.(true));
+    view.dom.addEventListener("focusout", (event) => {
+        if (view.dom.contains(event.relatedTarget)) return;
+        onFocusChange?.(false);
+    });
 
     return {
         getValue() {
@@ -325,6 +424,22 @@ export function createScenarioEditor(parent, options = {}) {
 
         setBackgroundPaused(paused) {
             backgroundPaused = Boolean(paused);
+        },
+
+        insertAtCursor(text) {
+            const sel = view.state.selection.main;
+            let insert = text;
+            if (insert.startsWith(" ") && sel.from > 0) {
+                const prev = view.state.doc.sliceString(sel.from - 1, sel.from);
+                if (/\s/.test(prev)) insert = insert.replace(/^\s+/, "");
+            }
+            const at = sel.from + insert.length;
+            view.dispatch({
+                changes: { from: sel.from, to: sel.to, insert },
+                selection: { anchor: at },
+                effects: EditorView.scrollIntoView(at, { y: "nearest" }),
+            });
+            view.focus();
         },
     };
 }

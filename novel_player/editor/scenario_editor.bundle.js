@@ -22963,36 +22963,6 @@ var ScenarioEditorModule = (() => {
     baseTheme5
   ];
 
-  // node_modules/codemirror/dist/index.js
-  var basicSetup = /* @__PURE__ */ (() => [
-    lineNumbers(),
-    highlightActiveLineGutter(),
-    highlightSpecialChars(),
-    history(),
-    foldGutter(),
-    drawSelection(),
-    dropCursor(),
-    EditorState.allowMultipleSelections.of(true),
-    indentOnInput(),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-    bracketMatching(),
-    closeBrackets(),
-    autocompletion(),
-    rectangularSelection(),
-    crosshairCursor(),
-    highlightActiveLine(),
-    highlightSelectionMatches(),
-    keymap.of([
-      ...closeBracketsKeymap,
-      ...defaultKeymap,
-      ...searchKeymap,
-      ...historyKeymap,
-      ...foldKeymap,
-      ...completionKeymap,
-      ...lintKeymap
-    ])
-  ])();
-
   // editor/novel_syntax.mjs
   var rawLineTag = Tag.define();
   var novelLanguage = StreamLanguage.define({
@@ -23232,6 +23202,48 @@ var ScenarioEditorModule = (() => {
     buildHighlightStyle(resolveSyntaxColors("default"))
   );
 
+  // editor/label_blocks.mjs
+  function isLabelDefLine(raw) {
+    const line = String(raw).trim();
+    if (!line.startsWith("@")) return false;
+    if (line.startsWith("@goto") || line.startsWith("@call")) return false;
+    if (line === "@return" || line === "@end" || line === "@meta" || line === "@endmeta") {
+      return false;
+    }
+    if (/^@set(?:\s|$)/.test(line)) return false;
+    if (line === "@else" || line === "@endif") return false;
+    if (/^@else if(?:\s|$)/.test(line)) return false;
+    if (/^@elseif(?:\s|$)/.test(line)) return false;
+    if (/^@if(?:\s|$)/.test(line)) return false;
+    return true;
+  }
+  function listLabelBlocks(doc2) {
+    const starts = [];
+    for (let n = 1; n <= doc2.lines; n++) {
+      const line = doc2.line(n);
+      if (isLabelDefLine(line.text)) starts.push(line);
+    }
+    return starts.map((line, i) => {
+      const next = starts[i + 1];
+      return {
+        name: line.text.trim().slice(1),
+        from: line.from,
+        headerTo: line.to,
+        to: next ? next.from : doc2.length
+      };
+    });
+  }
+  function labelBlockAt(doc2, pos) {
+    const blocks = listLabelBlocks(doc2);
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const block = blocks[i];
+      if (pos >= block.from && (pos < block.to || i === blocks.length - 1)) {
+        return { index: i, blocks };
+      }
+    }
+    return { index: -1, blocks };
+  }
+
   // editor/scenario_editor.mjs
   function clearDomTextSelection() {
     const sel = window.getSelection?.();
@@ -23239,6 +23251,13 @@ var ScenarioEditorModule = (() => {
   }
   function isCoarsePointer() {
     return typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+  }
+  function symbolBarCover(scrollerRect) {
+    const bar = document.getElementById("symbolBar");
+    if (!bar || bar.hidden || !scrollerRect) return 0;
+    const barRect = bar.getBoundingClientRect();
+    const overlap = Math.min(barRect.bottom, scrollerRect.bottom) - Math.max(barRect.top, scrollerRect.top);
+    return overlap > 0 ? overlap : 0;
   }
   var KEYBOARD_SCROLL_PADDING = 12;
   function getHiddenScrollerInsets(view) {
@@ -23249,7 +23268,7 @@ var ScenarioEditorModule = (() => {
     const visibleBottom = vv.offsetTop + vv.height;
     return {
       top: Math.max(0, visibleTop - rect.top),
-      bottom: Math.max(0, rect.bottom - visibleBottom)
+      bottom: Math.max(0, rect.bottom - visibleBottom) + symbolBarCover(rect)
     };
   }
   function scrollTopKeepingCursorVisible(view, baseScrollTop) {
@@ -23387,8 +23406,55 @@ var ScenarioEditorModule = (() => {
     return [scrollMargins2, viewportPlugin];
   }
   var colorThemeCompartment = new Compartment();
+  function labelBodyFoldRange(doc2, block) {
+    if (!block) return null;
+    let to = block.to;
+    if (to < doc2.length) to -= 1;
+    if (block.headerTo >= to) return null;
+    return { from: block.headerTo, to };
+  }
+  var labelFoldService = foldService.of((state, lineStart) => {
+    const line = state.doc.lineAt(lineStart);
+    const { index, blocks } = labelBlockAt(state.doc, line.from);
+    if (index < 0 || blocks[index].from !== line.from) return null;
+    return labelBodyFoldRange(state.doc, blocks[index]);
+  });
+  function foldMarkerDOM(open) {
+    const span = document.createElement("span");
+    span.className = open ? "cm-foldMarker is-open" : "cm-foldMarker is-folded";
+    span.title = open ? "\u305F\u305F\u3080" : "\u3072\u3089\u304F";
+    return span;
+  }
+  var editorSetup = [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter({ markerDOM: foldMarkerDOM }),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      ...completionKeymap,
+      ...lintKeymap
+    ])
+  ];
   function createScenarioEditor(parent, options = {}) {
-    const { onChange, onPreviewShortcut, onSyncEditorShortcut, onCursorChange } = options;
+    const { onChange, onPreviewShortcut, onSyncEditorShortcut, onCursorChange, onFocusChange } = options;
     const initialTheme = getStoredThemeId();
     let backgroundPaused = false;
     const previewKeymap = keymap.of([
@@ -23411,8 +23477,9 @@ var ScenarioEditorModule = (() => {
       parent,
       doc: "",
       extensions: [
-        basicSetup,
+        editorSetup,
         novelLanguage,
+        labelFoldService,
         colorThemeCompartment.of(buildColorThemeExtensions(initialTheme)),
         EditorView.lineWrapping,
         previewKeymap,
@@ -23429,6 +23496,11 @@ var ScenarioEditorModule = (() => {
       ]
     });
     parent.classList.add("script-editor-host--ready");
+    view.dom.addEventListener("focusin", () => onFocusChange?.(true));
+    view.dom.addEventListener("focusout", (event) => {
+      if (view.dom.contains(event.relatedTarget)) return;
+      onFocusChange?.(false);
+    });
     return {
       getValue() {
         return view.state.doc.toString();
@@ -23495,10 +23567,25 @@ var ScenarioEditorModule = (() => {
       },
       setBackgroundPaused(paused) {
         backgroundPaused = Boolean(paused);
+      },
+      insertAtCursor(text) {
+        const sel = view.state.selection.main;
+        let insert2 = text;
+        if (insert2.startsWith(" ") && sel.from > 0) {
+          const prev = view.state.doc.sliceString(sel.from - 1, sel.from);
+          if (/\s/.test(prev)) insert2 = insert2.replace(/^\s+/, "");
+        }
+        const at = sel.from + insert2.length;
+        view.dispatch({
+          changes: { from: sel.from, to: sel.to, insert: insert2 },
+          selection: { anchor: at },
+          effects: EditorView.scrollIntoView(at, { y: "nearest" })
+        });
+        view.focus();
       }
     };
   }
-  var EDITOR_BUILD = true ? "2026-10-14 00:59:08" : "dev";
+  var EDITOR_BUILD = true ? "2026-10-18 15:05:24" : "dev";
   if (typeof window !== "undefined") {
     window.ScenarioEditor = { create: createScenarioEditor, build: EDITOR_BUILD };
     const showBuild = () => {

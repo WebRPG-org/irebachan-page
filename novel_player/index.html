@@ -124,6 +124,13 @@
     </div>
     </div>
 
+    <div id="symbolBar" class="symbol-bar" hidden>
+        <button type="button" data-insert="#" aria-label="名前の #">#</button>
+        <button type="button" data-insert="@" aria-label="ラベルの @">@</button>
+        <button type="button" data-insert="- " aria-label="選択肢の -">-</button>
+        <button type="button" data-insert=" => " aria-label="行き先の =>">=&gt;</button>
+    </div>
+
     <div id="novelMenuPanel" class="menu-drawer menu-drawer--novel" aria-hidden="true">
         <div class="menu-drawer-backdrop" data-menu-close="novel" tabindex="-1"></div>
         <div class="menu-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="novelMenuTitle">
@@ -313,6 +320,7 @@
 #キャラ名
 セリフ内容（複数行可能）
                 </pre>
+                <p>エディタに文字を打っているあいだ、<strong>#</strong> <strong>@</strong> <strong>-</strong> <strong>=&gt;</strong> のボタンがエディタの下のほうに浮かびます。押すとカーソルの位置へ入ります。スマホではキーボードの上に出ます。</p>
 
                 <h3>変数（@set）</h3>
                 <p>変数に値を入れます。<code>@if</code> で使います。</p>
@@ -361,6 +369,7 @@
                 <pre>
 @ラベル名
                 </pre>
+                <p>ラベル行の左の三角を押すと、そのラベルの本文だけを折りたたみます。脚本の中身は変わりません。</p>
 
                 <h3>ラベルへのジャンプ</h3>
                 <pre>

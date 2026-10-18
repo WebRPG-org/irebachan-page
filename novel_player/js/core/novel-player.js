@@ -569,8 +569,69 @@ class NovelPlayer {
             onPreviewShortcut: () => this.previewFromEditorLine(),
             onSyncEditorShortcut: () => this.syncEditorToPreview(),
             onCursorChange: () => this.updateEditorStatusBarDebounced(),
+            onFocusChange: (focused) => this.setSymbolBar(focused),
         });
+        this.bindSymbolBar();
         this.initAppThemeSelect();
+    }
+
+    bindSymbolBar() {
+        this.symbolBar = document.getElementById("symbolBar");
+        if (!this.symbolBar) return;
+        this.symbolBar.addEventListener("pointerdown", (event) => {
+            if (event.target.closest("button")) event.preventDefault();
+        });
+        this.symbolBar.addEventListener("click", (event) => {
+            const button = event.target.closest("button");
+            const text = button?.dataset.insert;
+            if (!text) return;
+            this.scenarioEditor?.insertAtCursor(text);
+        });
+        this._placeSymbolBar = () => this.placeSymbolBar();
+        window.visualViewport?.addEventListener("resize", this._placeSymbolBar);
+        window.visualViewport?.addEventListener("scroll", this._placeSymbolBar);
+        window.addEventListener("resize", this._placeSymbolBar);
+        if (this.scriptEditorHost && typeof ResizeObserver !== "undefined") {
+            this._symbolBarObserver = new ResizeObserver(this._placeSymbolBar);
+            this._symbolBarObserver.observe(this.scriptEditorHost);
+        }
+    }
+
+    setSymbolBar(focused) {
+        if (!this.symbolBar) return;
+        const show = Boolean(focused);
+        this.symbolBar.hidden = !show;
+        if (show) this.placeSymbolBar();
+    }
+
+    placeSymbolBar() {
+        const bar = this.symbolBar;
+        const host = this.scriptEditorHost;
+        if (!bar || bar.hidden || !host) return;
+        const vv = window.visualViewport;
+        const rect = host.getBoundingClientRect();
+        const visLeft = vv?.offsetLeft ?? 0;
+        const visTop = vv?.offsetTop ?? 0;
+        const visRight = visLeft + (vv?.width ?? window.innerWidth);
+        const visBottom = visTop + (vv?.height ?? window.innerHeight);
+        const left = Math.max(rect.left, visLeft);
+        const right = Math.min(rect.right, visRight);
+        if (right - left < 8) return;
+        const barWidth = bar.offsetWidth;
+        const barHeight = bar.offsetHeight;
+        let x = (rect.left + rect.right) / 2 - barWidth / 2;
+        x = Math.max(left + 4, Math.min(x, right - barWidth - 4));
+        const hang = Math.round(barHeight / 2);
+        const anchorBottom = rect.bottom > visBottom ? visBottom - 6 : rect.bottom + hang;
+        let y = anchorBottom - barHeight;
+        y = Math.min(y, visBottom - barHeight - 4);
+        y = Math.max(Math.max(rect.top, visTop) + 4, y);
+        bar.style.transform = "none";
+        bar.style.right = "auto";
+        bar.style.bottom = "auto";
+        bar.style.width = "max-content";
+        bar.style.left = `${Math.round(x)}px`;
+        bar.style.top = `${Math.round(y)}px`;
     }
 
     initAppThemeSelect() {
